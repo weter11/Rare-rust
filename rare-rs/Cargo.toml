@@ -2,6 +2,8 @@
 name = "rare-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["RareDevs"]
+description = "A graphical interface for Legendary, a command line alternative to Epic Games launcher"
 
 [dependencies]
 eframe = { version = "0.26.2", features = ["persistence"] }
@@ -10,4 +12,19 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
 env_logger = "0.11"
-reqwest = { version = "0.11", features = ["json"] } # for images/fetching data
+reqwest = { version = "0.11", features = ["json"] }
+
+[package.metadata.deb]
+maintainer = "RareDevs <contact@raredevs.github.io>"
+copyright = "2024, RareDevs"
+license-file = ["../LICENSE", "0"]
+extended-description = """
+Rare is a graphical interface for Legendary, a command line alternative to Epic Games launcher.
+This is a reimplementation in Rust using egui.
+"""
+section = "utils"
+priority = "optional"
+depends = "$auto, libx11-6, libxcursor1, libxinerama1, libxi6, libxrandr2, libgl1, libasound2t64, libdbus-1-3"
+assets = [
+    ["target/release/rare-rs", "usr/bin/rare-rs", "755"],
+]
