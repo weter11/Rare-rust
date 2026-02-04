@@ -2,9 +2,10 @@ mod models;
 mod legendary;
 
 use eframe::egui;
-use legendary::Legendary;
+use legendary::{Legendary, InstallProgress, AuthProgress};
 use models::RareGame;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::collections::HashMap;
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
@@ -20,6 +21,12 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+struct ActiveInstall {
+    progress: f32,
+    status: String,
+    rx: Receiver<InstallProgress>,
+}
+
 struct RareApp {
     legendary: Legendary,
     library: Vec<RareGame>,
@@ -30,6 +37,9 @@ struct RareApp {
     status_message: String,
     tx: Sender<Result<Vec<RareGame>, String>>,
     rx: Receiver<Result<Vec<RareGame>, String>>,
+    auth_code: String,
+    active_installs: HashMap<String, ActiveInstall>,
+    auth_rx: Option<Receiver<AuthProgress>>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -54,6 +64,9 @@ impl RareApp {
             status_message: "Ready".to_string(),
             tx,
             rx,
+            auth_code: String::new(),
+            active_installs: HashMap::new(),
+            auth_rx: None,
         };
 
         app.trigger_refresh();
@@ -90,6 +103,51 @@ impl RareApp {
                 }
             }
         }
+
+        if let Some(rx) = &self.auth_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.loading = false;
+                match res {
+                    AuthProgress::Finished => {
+                        self.status_message = "Successfully logged in".to_string();
+                        self.error = None;
+                        self.current_page = Page::Library;
+                        self.refresh_library();
+                    }
+                    AuthProgress::Error(e) => {
+                        self.status_message = format!("Login failed: {}", e);
+                    }
+                }
+                self.auth_rx = None;
+            }
+        }
+
+        let mut finished = Vec::new();
+        for (app_name, install) in &mut self.active_installs {
+            while let Ok(msg) = install.rx.try_recv() {
+                match msg {
+                    InstallProgress::Percentage(p) => install.progress = p,
+                    InstallProgress::Status(s) => install.status = s,
+                    InstallProgress::Finished => {
+                        finished.push(app_name.clone());
+                    }
+                    InstallProgress::Error(e) => {
+                        self.status_message = format!("Error installing {}: {}", app_name, e);
+                        finished.push(app_name.clone());
+                    }
+                }
+            }
+        }
+
+        for app_name in finished {
+            self.active_installs.remove(&app_name);
+            self.refresh_library();
+        }
+    }
+
+    fn refresh_library(&mut self) {
+        self.loading = true;
+        self.trigger_refresh();
     }
 }
 
@@ -112,8 +170,7 @@ impl eframe::App for RareApp {
                     ui.spinner();
                 } else {
                     if ui.button("Refresh").clicked() {
-                        self.loading = true;
-                        self.trigger_refresh();
+                        self.refresh_library();
                     }
                 }
             });
@@ -126,8 +183,7 @@ impl eframe::App for RareApp {
                 } else {
                     ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
                     if ui.button("Retry").clicked() {
-                        self.loading = true;
-                        self.trigger_refresh();
+                        self.refresh_library();
                     }
                 }
                 return;
@@ -135,21 +191,17 @@ impl eframe::App for RareApp {
 
             match self.current_page {
                 Page::Library => self.show_library(ui),
-                Page::Downloads => {
-                    ui.heading("Downloads");
-                    ui.label("No active downloads.");
-                }
+                Page::Downloads => self.show_downloads(ui),
                 Page::Settings => {
                     ui.heading("Settings");
                     ui.label("General Settings");
-                    ui.checkbox(&mut false, "Enable debug logs");
+                    ui.checkbox(&mut self.legendary.mock, "Mock mode");
                 }
                 Page::Login => self.show_login(ui),
             }
         });
 
-        // Ensure UI updates if we are loading
-        if self.loading {
+        if self.loading || !self.active_installs.is_empty() || self.auth_rx.is_some() {
             ctx.request_repaint();
         }
     }
@@ -163,37 +215,78 @@ impl RareApp {
         });
         ui.separator();
 
+        let dlc_map: HashMap<String, Vec<&RareGame>> = self.library.iter()
+            .filter(|g| g.is_dlc())
+            .fold(HashMap::new(), |mut acc, g| {
+                if let Some(main) = g.main_game_app_name() {
+                    acc.entry(main).or_default().push(g);
+                }
+                acc
+            });
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             for rgame in &self.library {
+                if rgame.is_dlc() { continue; }
                 if !self.search_query.is_empty() && !rgame.title().to_lowercase().contains(&self.search_query.to_lowercase()) {
                     continue;
                 }
 
                 ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(rgame.title()).strong().size(16.0));
-                            ui.label(format!("Developer: {}", rgame.developer()));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if rgame.is_installed() {
-                                if ui.button("Launch").clicked() {
-                                    if let Err(e) = self.legendary.launch(&rgame.game.app_name) {
-                                        self.status_message = format!("Launch failed: {}", e);
-                                    } else {
-                                        self.status_message = format!("Launched {}", rgame.title());
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(rgame.title()).strong().size(16.0));
+                                ui.label(format!("Developer: {}", rgame.developer()));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if let Some(install) = self.active_installs.get(&rgame.game.app_name) {
+                                    ui.add(egui::ProgressBar::new(install.progress / 100.0).text(format!("{:.1}%", install.progress)));
+                                } else if rgame.is_installed() {
+                                    if ui.button("Launch").clicked() {
+                                        if let Err(e) = self.legendary.launch(&rgame.game.app_name) {
+                                            self.status_message = format!("Launch failed: {}", e);
+                                        } else {
+                                            self.status_message = format!("Launched {}", rgame.title());
+                                        }
+                                    }
+                                } else {
+                                    if ui.button("Install").clicked() {
+                                        let rx = self.legendary.install_game(rgame.game.app_name.clone());
+                                        self.active_installs.insert(rgame.game.app_name.clone(), ActiveInstall {
+                                            progress: 0.0,
+                                            status: "Starting...".to_string(),
+                                            rx,
+                                        });
                                     }
                                 }
-                            } else {
-                                if ui.button("Install").clicked() {
-                                    if let Err(e) = self.legendary.install(&rgame.game.app_name) {
-                                        self.status_message = format!("Install failed: {}", e);
-                                    } else {
-                                        self.status_message = format!("Installing {}", rgame.title());
-                                    }
-                                }
-                            }
+                            });
                         });
+
+                        if let Some(dlcs) = dlc_map.get(&rgame.game.app_name) {
+                            ui.collapsing("DLCs", |ui| {
+                                for dlc in dlcs {
+                                    ui.horizontal(|ui| {
+                                        ui.label(dlc.title());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if let Some(install) = self.active_installs.get(&dlc.game.app_name) {
+                                                ui.label(format!("{:.1}%", install.progress));
+                                            } else if dlc.is_installed() {
+                                                ui.label("Installed");
+                                            } else {
+                                                if ui.button("Install").clicked() {
+                                                    let rx = self.legendary.install_game(dlc.game.app_name.clone());
+                                                    self.active_installs.insert(dlc.game.app_name.clone(), ActiveInstall {
+                                                        progress: 0.0,
+                                                        status: "Starting...".to_string(),
+                                                        rx,
+                                                    });
+                                                }
+                                            }
+                                        });
+                                    });
+                                }
+                            });
+                        }
                     });
                 });
                 ui.add_space(5.0);
@@ -201,20 +294,46 @@ impl RareApp {
         });
     }
 
+    fn show_downloads(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Downloads");
+        ui.separator();
+        if self.active_installs.is_empty() {
+            ui.label("No active downloads.");
+        } else {
+            for (app_name, install) in &self.active_installs {
+                ui.group(|ui| {
+                    ui.label(app_name);
+                    ui.add(egui::ProgressBar::new(install.progress / 100.0).text(format!("{:.1}%", install.progress)));
+                    ui.label(&install.status);
+                });
+            }
+        }
+    }
+
     fn show_login(&mut self, ui: &mut egui::Ui) {
         ui.heading("Login to Epic Games");
         ui.add_space(10.0);
-        ui.label("Rare uses Legendary as a backend. To log in, please run the following command in your terminal:");
+        ui.label("Rare uses Legendary as a backend. To log in, please click the button below to get an authorization code:");
         ui.add_space(5.0);
-        ui.code("legendary auth");
-        ui.add_space(5.0);
-        ui.label("Then follow the instructions provided by Legendary.");
 
-        if ui.button("I have logged in, refresh library").clicked() {
-            self.legendary.mock = false;
-            self.loading = true;
-            self.trigger_refresh();
+        if ui.button("Open Login URL in Browser").clicked() {
+            let _ = webbrowser::open("https://www.epicgames.com/id/api/redirect?clientId=34a02cf8f4414e29b15921876da36f9a&responseType=code");
         }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.label("Authorization Code:");
+            ui.text_edit_singleline(&mut self.auth_code);
+        });
+
+        if ui.button("Log In").clicked() && !self.loading {
+            self.loading = true;
+            self.auth_rx = Some(self.legendary.auth_with_code(self.auth_code.clone()));
+        }
+
+        ui.add_space(20.0);
+        ui.separator();
+        ui.label("Alternatively, use legendary auth in your terminal.");
     }
 }
 
@@ -236,6 +355,9 @@ mod tests {
             status_message: "Ready".to_string(),
             tx,
             rx,
+            auth_code: String::new(),
+            active_installs: HashMap::new(),
+            auth_rx: None,
         };
         assert_eq!(app.current_page, Page::Library);
         assert!(app.loading);

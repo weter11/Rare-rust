@@ -2795,10 +2795,12 @@ dependencies = [
  "eframe",
  "env_logger",
  "log",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "webbrowser",
 ]
 
 [[package]]

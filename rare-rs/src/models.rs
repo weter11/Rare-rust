@@ -48,4 +48,14 @@ impl RareGame {
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown")
     }
+
+    pub fn is_dlc(&self) -> bool {
+        self.game.metadata.contains_key("mainGameItem")
+    }
+
+    pub fn main_game_app_name(&self) -> Option<String> {
+        self.game.metadata.get("mainGameItem")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
 }
