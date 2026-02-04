@@ -1,0 +1,3 @@
+[submodule "legendary"]
+	path = legendary
+	url = https://github.com/RareDevs/legendary.git

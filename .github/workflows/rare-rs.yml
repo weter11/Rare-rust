@@ -1,0 +1,57 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxcb1-dev \
+          libwayland-dev \
+          libxkbcommon-dev \
+          libegl1-mesa-dev \
+          libgl1-mesa-dev \
+          libasound2-dev \
+          libdbus-1-dev
+
+    - name: Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build
+      run: |
+        cd rare-rs
+        cargo build --release --verbose
+
+    - name: Run tests
+      run: |
+        cd rare-rs
+        cargo test --verbose
+
+    - name: Install cargo-deb
+      run: cargo install cargo-deb
+
+    - name: Generate .deb package
+      run: |
+        cd rare-rs
+        cargo deb --no-build
+
+    - name: Upload .deb artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rare-rs-deb
+        path: rare-rs/target/debian/*.deb
