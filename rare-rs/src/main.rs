@@ -32,7 +32,7 @@ struct RareApp {
     rx: Receiver<Result<Vec<RareGame>, String>>,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum Page {
     Library,
     Downloads,
@@ -215,5 +215,29 @@ impl RareApp {
             self.loading = true;
             self.trigger_refresh();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_initial_state() {
+        let (tx, rx) = channel();
+        let legendary = Legendary::new(true); // mock
+        let app = RareApp {
+            legendary,
+            library: Vec::new(),
+            search_query: String::new(),
+            current_page: Page::Library,
+            error: None,
+            loading: true,
+            status_message: "Ready".to_string(),
+            tx,
+            rx,
+        };
+        assert_eq!(app.current_page, Page::Library);
+        assert!(app.loading);
     }
 }
